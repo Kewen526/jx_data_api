@@ -539,13 +539,50 @@ def generate_weekly_report(
     生成周报（两周对比）
     """
     db = get_db_pool()
+
+    # 如果指定了accounts，先获取对应的shop_id列表
+    shop_ids_filter = None
+    if accounts:
+        conn_temp = db.get_connection()
+        cursor_temp = conn_temp.cursor(dictionary=True)
+        try:
+            placeholders = ','.join(['%s'] * len(accounts))
+            sql_accounts = f"""
+            SELECT stores_json FROM platform_accounts WHERE account IN ({placeholders})
+            """
+            cursor_temp.execute(sql_accounts, accounts)
+            account_data = cursor_temp.fetchall()
+
+            shop_ids_filter = []
+            for acc in account_data:
+                stores_json = acc.get('stores_json')
+                if stores_json:
+                    try:
+                        if isinstance(stores_json, str):
+                            stores = json.loads(stores_json)
+                        else:
+                            stores = stores_json
+
+                        if isinstance(stores, list):
+                            for store in stores:
+                                if isinstance(store, dict):
+                                    shop_id = str(store.get('shop_id', ''))
+                                    if shop_id:
+                                        shop_ids_filter.append(shop_id)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+        finally:
+            cursor_temp.close()
+            conn_temp.close()
+
     shop_mapping = get_shop_info_mapping(accounts)
 
     conn = db.get_connection()
     cursor = conn.cursor(dictionary=True)
 
     try:
-        sql_week = """
+        # 构建基础SQL
+        sql_week_base = """
         SELECT
             k.shop_id, k.shop_name,
             SUM(k.verify_after_discount) as verify_after_discount,
@@ -575,14 +612,31 @@ def generate_weekly_report(
         LEFT JOIN promotion_daily_report p ON k.shop_id = p.shop_id AND k.report_date = p.report_date
         LEFT JOIN store_stats s ON k.shop_id = s.store_id AND k.report_date = s.date
         WHERE k.report_date BETWEEN %s AND %s
+        """
+
+        # 添加shop_id过滤条件
+        if shop_ids_filter:
+            shop_placeholders = ','.join(['%s'] * len(shop_ids_filter))
+            sql_week = sql_week_base + f" AND k.shop_id IN ({shop_placeholders})"
+        else:
+            sql_week = sql_week_base
+
+        sql_week += """
         GROUP BY k.shop_id, k.shop_name
         ORDER BY k.shop_id
         """
 
-        cursor.execute(sql_week, (week1_start, week1_end))
+        # 构建参数
+        params_week1 = [week1_start, week1_end]
+        params_week2 = [week2_start, week2_end]
+        if shop_ids_filter:
+            params_week1.extend(shop_ids_filter)
+            params_week2.extend(shop_ids_filter)
+
+        cursor.execute(sql_week, params_week1)
         week1_data = {row['shop_id']: row for row in cursor.fetchall()}
 
-        cursor.execute(sql_week, (week2_start, week2_end))
+        cursor.execute(sql_week, params_week2)
         week2_data = {row['shop_id']: row for row in cursor.fetchall()}
 
         all_shop_ids = set(week1_data.keys()) | set(week2_data.keys())
