@@ -533,16 +533,21 @@ def generate_weekly_report(
     week1_end: str,
     week2_start: str,
     week2_end: str,
-    accounts: Optional[List[str]] = None
+    accounts: Optional[List[str]] = None,
+    shop_id: Optional[str] = None
 ) -> str:
     """
     生成周报（两周对比）
     """
     db = get_db_pool()
 
-    # 如果指定了accounts，先获取对应的shop_id列表
+    # 如果指定了shop_id，直接使用该shop_id过滤
+    # 否则如果指定了accounts，获取对应的shop_id列表
     shop_ids_filter = None
-    if accounts:
+    if shop_id:
+        # 直接使用传入的单个shop_id
+        shop_ids_filter = [shop_id]
+    elif accounts:
         conn_temp = db.get_connection()
         cursor_temp = conn_temp.cursor(dictionary=True)
         try:
@@ -566,9 +571,9 @@ def generate_weekly_report(
                         if isinstance(stores, list):
                             for store in stores:
                                 if isinstance(store, dict):
-                                    shop_id = str(store.get('shop_id', ''))
-                                    if shop_id:
-                                        shop_ids_filter.append(shop_id)
+                                    sid = str(store.get('shop_id', ''))
+                                    if sid:
+                                        shop_ids_filter.append(sid)
                     except (json.JSONDecodeError, TypeError):
                         pass
         finally:
@@ -864,10 +869,13 @@ def generate_custom_report(
     period1_end: str,
     period2_start: str,
     period2_end: str,
-    shop_ids: Optional[List[str]] = None,
-    accounts: Optional[List[str]] = None
+    accounts: Optional[List[str]] = None,
+    shop_id: Optional[str] = None
 ) -> str:
     """
     生成自定义报表（两个自定义时间段对比，支持筛选门店）
+    参数:
+        accounts: 门店账号列表
+        shop_id: 单个门店ID，用于筛选账号下的特定门店
     """
-    return generate_weekly_report(period1_start, period1_end, period2_start, period2_end, accounts)
+    return generate_weekly_report(period1_start, period1_end, period2_start, period2_end, accounts, shop_id)
