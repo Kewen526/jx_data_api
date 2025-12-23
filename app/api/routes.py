@@ -53,8 +53,8 @@ class CustomReportRequest(BaseModel):
     period1_end: str = Field(..., description="第一个时期结束日期", example="2025-12-07")
     period2_start: str = Field(..., description="第二个时期开始日期", example="2025-12-08")
     period2_end: str = Field(..., description="第二个时期结束日期", example="2025-12-14")
-    shop_ids: Optional[List[str]] = Field(None, description="门店ID列表")
     accounts: Optional[List[str]] = Field(None, description="门店账号列表")
+    shop_id: Optional[str] = Field(None, description="门店ID，用于筛选账号下的单个门店")
 
 
 # ==================== API 路由 ====================
@@ -159,7 +159,7 @@ async def create_custom_report(request: CustomReportRequest):
     """
     生成自定义报表
     - 传入两个时间段的起止日期
-    - 可选传入门店ID列表或账号列表进行筛选
+    - 可选传入账号列表和单个门店ID进行筛选
     - 返回 Excel 文件下载
     """
     try:
@@ -170,8 +170,8 @@ async def create_custom_report(request: CustomReportRequest):
             request.period1_end,
             request.period2_start,
             request.period2_end,
-            request.shop_ids,
-            request.accounts
+            request.accounts,
+            request.shop_id
         )
 
         if not file_path or not os.path.exists(file_path):
