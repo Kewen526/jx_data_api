@@ -36,6 +36,7 @@ async def lifespan(app: FastAPI):
 # 创建 FastAPI 应用
 app = FastAPI(
     title="江鑫数据报表 API",
+    root_path="/report-api",
     description="""
 ## 功能说明
 
