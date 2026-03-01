@@ -272,6 +272,7 @@ def generate_daily_report(report_date: str, accounts: Optional[List[str]] = None
             account_data = cursor_temp.fetchall()
 
             shop_ids_filter = []
+            shop_name_fallback = {}
             for acc in account_data:
                 stores_json = acc.get('stores_json')
                 if stores_json:
@@ -287,13 +288,14 @@ def generate_daily_report(report_date: str, accounts: Optional[List[str]] = None
                                     shop_id = str(store.get('shop_id', ''))
                                     if shop_id:
                                         shop_ids_filter.append(shop_id)
+                                        shop_name_fallback[shop_id] = (
+                                            store.get('shop_name') or store.get('name') or f'门店{shop_id}'
+                                        )
                     except (json.JSONDecodeError, TypeError):
                         pass
         finally:
             cursor_temp.close()
             conn_temp.close()
-
-        # 账号找不到也继续，生成空报表
 
     # 获取门店信息映射
     shop_mapping = get_shop_info_mapping(accounts)
@@ -335,9 +337,26 @@ def generate_daily_report(report_date: str, accounts: Optional[List[str]] = None
         sql += " ORDER BY k.shop_id"
 
         cursor.execute(sql, params)
-        rows = cursor.fetchall()
+        rows = list(cursor.fetchall())
 
-        # rows 为空时继续，生成只有表头的报表
+        # 补全 accounts 中有但无当天数据的门店，填空行
+        if shop_ids_filter:
+            shop_ids_with_data = {str(r['shop_id']) for r in rows}
+            for sid in shop_ids_filter:
+                if sid not in shop_ids_with_data:
+                    rows.append({
+                        'report_date': report_date, 'shop_id': sid,
+                        'shop_name': shop_name_fallback.get(sid, f'门店{sid}'),
+                        'exposure_users': None, 'visit_users': None, 'order_users': None,
+                        'verify_users': None, 'order_coupon_count': None, 'verify_coupon_count': None,
+                        'promotion_cost': None, 'new_good_review_count': None, 'new_review_count': None,
+                        'new_collect_users': None, 'consult_users': None, 'intent_rate': None,
+                        'order_sale_amount': None, 'verify_sale_amount': None, 'verify_after_discount': None,
+                        'phone_clicks': None, 'address_clicks': None, 'click_avg_price': None,
+                        'promotion_order_count': None, 'order_user_rank': None, 'verify_amount_rank': None,
+                        'checkin_count': None, 'ad_balance': None, 'ad_order_count': None, 'is_force_offline': None,
+                    })
+            rows.sort(key=lambda x: str(x['shop_id']))
 
         # 创建 Excel 工作簿
         wb = openpyxl.Workbook()
@@ -548,6 +567,7 @@ def generate_weekly_report(
     # 如果指定了shop_id，直接使用该shop_id过滤
     # 否则如果指定了accounts，获取对应的shop_id列表
     shop_ids_filter = None
+    shop_name_fallback = {}
     if shop_id:
         # 直接使用传入的单个shop_id
         shop_ids_filter = [shop_id]
@@ -578,6 +598,9 @@ def generate_weekly_report(
                                     sid = str(store.get('shop_id', ''))
                                     if sid:
                                         shop_ids_filter.append(sid)
+                                        shop_name_fallback[sid] = (
+                                            store.get('shop_name') or store.get('name') or f'门店{sid}'
+                                        )
                     except (json.JSONDecodeError, TypeError):
                         pass
         finally:
@@ -653,7 +676,9 @@ def generate_weekly_report(
 
         all_shop_ids = set(week1_data.keys()) | set(week2_data.keys())
 
-        # all_shop_ids 为空时继续，生成只有表头的报表
+        # 补全 accounts 中有但无任何数据的门店
+        if shop_ids_filter:
+            all_shop_ids |= set(shop_ids_filter)
 
         wb = openpyxl.Workbook()
         ws_summary = wb.active
@@ -668,7 +693,7 @@ def generate_weekly_report(
         for shop_id in sorted(all_shop_ids):
             w1 = week1_data.get(shop_id, {})
             w2 = week2_data.get(shop_id, {})
-            shop_name = w2.get('shop_name') or w1.get('shop_name', '未知门店')
+            shop_name = w2.get('shop_name') or w1.get('shop_name') or shop_name_fallback.get(str(shop_id), f'门店{shop_id}')
 
             shop_id_str = str(shop_id)
             shop_info = shop_mapping.get(shop_id_str, {})
