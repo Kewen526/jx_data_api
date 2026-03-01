@@ -293,6 +293,9 @@ def generate_daily_report(report_date: str, accounts: Optional[List[str]] = None
             cursor_temp.close()
             conn_temp.close()
 
+        if not shop_ids_filter:
+            raise ValueError(f"未找到账号 {accounts} 对应的门店，请确认账号是否正确")
+
     # 获取门店信息映射
     shop_mapping = get_shop_info_mapping(accounts)
     region_mapping = get_region_info_mapping(accounts)
@@ -322,7 +325,10 @@ def generate_daily_report(report_date: str, accounts: Optional[List[str]] = None
         """
 
         params = [report_date]
-        if shop_ids_filter:
+        if shop_ids_filter is not None:
+            if not shop_ids_filter:
+                # accounts 有指定但没有找到任何对应的 shop_id，直接返回空
+                raise ValueError(f"指定的账号未找到对应门店，请确认账号是否正确")
             placeholders = ','.join(['%s'] * len(shop_ids_filter))
             sql += f" AND k.shop_id IN ({placeholders})"
             params.extend(shop_ids_filter)
@@ -620,7 +626,9 @@ def generate_weekly_report(
         """
 
         # 添加shop_id过滤条件
-        if shop_ids_filter:
+        if shop_ids_filter is not None:
+            if not shop_ids_filter:
+                raise ValueError(f"指定的账号未找到对应门店，请确认账号是否正确")
             shop_placeholders = ','.join(['%s'] * len(shop_ids_filter))
             sql_week = sql_week_base + f" AND k.shop_id IN ({shop_placeholders})"
         else:
