@@ -6,6 +6,7 @@ API 路由定义
 """
 
 import os
+from collections import defaultdict
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
@@ -45,6 +46,12 @@ class MonthlyReportRequest(BaseModel):
     month2_start: str = Field(..., description="第二个月开始日期", example="2025-12-01")
     month2_end: str = Field(..., description="第二个月结束日期", example="2025-12-31")
     accounts: Optional[List[str]] = Field(None, description="门店账号列表")
+
+
+class MonthlyTaskRequest(BaseModel):
+    """月度任务报表请求参数（按日期列表自动推断月份范围）"""
+    task_date_list: List[str] = Field(..., description="日期列表，格式 YYYY-MM-DD，需包含两个月的日期")
+    account_id_list: List[str] = Field(..., description="账号ID列表")
 
 
 class CustomReportRequest(BaseModel):
@@ -172,6 +179,62 @@ async def create_custom_report(request: CustomReportRequest):
             request.period2_end,
             request.accounts,
             request.shop_id
+        )
+
+        if not file_path or not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="报表生成失败，未找到文件")
+
+        filename = os.path.basename(file_path)
+        return FileResponse(
+            path=file_path,
+            filename=filename,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"报表生成失败: {str(e)}")
+
+
+@router.post("/monthly-task", summary="生成月度任务报表", description="按日期列表和账号列表生成两个月对比的月报，自动推断月份范围")
+async def create_monthly_task_report(request: MonthlyTaskRequest):
+    """
+    生成月度任务报表
+    - 传入日期列表（包含两个月的日期）和账号ID列表
+    - 自动从日期列表中提取每个月的起止日期
+    - 返回 Excel 文件下载
+    """
+    if not request.task_date_list:
+        raise HTTPException(status_code=400, detail="task_date_list 不能为空")
+    if not request.account_id_list:
+        raise HTTPException(status_code=400, detail="account_id_list 不能为空")
+
+    # 按年月分组，提取每月最小/最大日期
+    month_dates: dict = defaultdict(list)
+    for d in request.task_date_list:
+        ym = d[:7]  # "YYYY-MM"
+        month_dates[ym].append(d)
+
+    months = sorted(month_dates.keys())
+    if len(months) < 2:
+        raise HTTPException(status_code=400, detail="task_date_list 必须包含至少两个月的日期")
+    if len(months) > 2:
+        raise HTTPException(status_code=400, detail=f"task_date_list 包含了 {len(months)} 个月的数据，只支持两个月对比")
+
+    month1_start = sorted(month_dates[months[0]])[0]
+    month1_end = sorted(month_dates[months[0]])[-1]
+    month2_start = sorted(month_dates[months[1]])[0]
+    month2_end = sorted(month_dates[months[1]])[-1]
+
+    try:
+        queue = get_task_queue()
+        file_path = await queue.run_task(
+            generate_monthly_report,
+            month1_start,
+            month1_end,
+            month2_start,
+            month2_end,
+            request.account_id_list
         )
 
         if not file_path or not os.path.exists(file_path):
