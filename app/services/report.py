@@ -305,58 +305,69 @@ def generate_daily_report(report_date: str, accounts: Optional[List[str]] = None
     cursor = conn.cursor(dictionary=True)
 
     try:
-        sql = """
-        SELECT
-            k.report_date, k.shop_id, k.shop_name,
-            k.exposure_users, k.visit_users, k.order_users,
-            k.verify_person_count as verify_users,
-            k.order_coupon_count, k.verify_coupon_count,
-            k.promotion_cost, k.new_good_review_count, k.new_review_count,
-            k.new_collect_users, k.consult_users, k.intent_rate,
-            k.order_sale_amount, k.verify_sale_amount, k.verify_after_discount,
-            p.view_phone_count as phone_clicks,
-            p.view_address_count as address_clicks,
-            p.click_avg_price, p.order_count as promotion_order_count,
-            s.order_user_rank, s.verify_amount_rank,
-            s.checkin_count, s.ad_balance, s.ad_order_count, s.is_force_offline
-        FROM kewen_daily_report k
-        LEFT JOIN promotion_daily_report p ON k.shop_id = p.shop_id AND k.report_date = p.report_date
-        LEFT JOIN store_stats s ON k.shop_id = s.store_id AND k.report_date = s.date
-        WHERE k.report_date = %s
-        """
-
-        params = [report_date]
-        if shop_ids_filter is not None:
-            if not shop_ids_filter:
-                sql += " AND 1=0"  # 账号存在但无对应门店，返回 0 行
-            else:
-                placeholders = ','.join(['%s'] * len(shop_ids_filter))
-                sql += f" AND k.shop_id IN ({placeholders})"
-                params.extend(shop_ids_filter)
-
-        sql += " ORDER BY k.shop_id"
-
-        cursor.execute(sql, params)
-        rows = list(cursor.fetchall())
-
-        # 补全 accounts 中有但无当天数据的门店，填空行
-        if shop_ids_filter:
-            shop_ids_with_data = {str(r['shop_id']) for r in rows}
+        if shop_ids_filter is not None and not shop_ids_filter:
+            # 账号存在但无对应门店，直接返回空结果
+            rows = []
+        elif shop_ids_filter:
+            # 以传入的店铺ID列表为驱动表，LEFT JOIN三张数据表
+            # 无论哪张表有无数据，所有传入的店铺都会出现在结果中
+            union_parts = []
+            union_params = []
             for sid in shop_ids_filter:
-                if sid not in shop_ids_with_data:
-                    rows.append({
-                        'report_date': report_date, 'shop_id': sid,
-                        'shop_name': shop_name_fallback.get(sid, f'门店{sid}'),
-                        'exposure_users': None, 'visit_users': None, 'order_users': None,
-                        'verify_users': None, 'order_coupon_count': None, 'verify_coupon_count': None,
-                        'promotion_cost': None, 'new_good_review_count': None, 'new_review_count': None,
-                        'new_collect_users': None, 'consult_users': None, 'intent_rate': None,
-                        'order_sale_amount': None, 'verify_sale_amount': None, 'verify_after_discount': None,
-                        'phone_clicks': None, 'address_clicks': None, 'click_avg_price': None,
-                        'promotion_order_count': None, 'order_user_rank': None, 'verify_amount_rank': None,
-                        'checkin_count': None, 'ad_balance': None, 'ad_order_count': None, 'is_force_offline': None,
-                    })
-            rows.sort(key=lambda x: str(x['shop_id']))
+                union_parts.append("SELECT %s AS shop_id, %s AS shop_name_hint")
+                union_params.extend([sid, shop_name_fallback.get(sid, f'门店{sid}')])
+            shop_subquery = ' UNION ALL '.join(union_parts)
+
+            sql = f"""
+            SELECT
+                sl.shop_id,
+                COALESCE(k.shop_name, p.shop_name, sl.shop_name_hint) AS shop_name,
+                k.exposure_users, k.visit_users, k.order_users,
+                k.verify_person_count AS verify_users,
+                k.order_coupon_count, k.verify_coupon_count,
+                k.promotion_cost, k.new_good_review_count, k.new_review_count,
+                k.new_collect_users, k.consult_users, k.intent_rate,
+                k.order_sale_amount, k.verify_sale_amount, k.verify_after_discount,
+                p.view_phone_count AS phone_clicks,
+                p.view_address_count AS address_clicks,
+                p.click_avg_price, p.order_count AS promotion_order_count,
+                s.order_user_rank, s.verify_amount_rank,
+                s.checkin_count, s.ad_balance, s.ad_order_count, s.is_force_offline
+            FROM ({shop_subquery}) AS sl
+            LEFT JOIN kewen_daily_report k ON sl.shop_id = k.shop_id AND k.report_date = %s
+            LEFT JOIN promotion_daily_report p ON sl.shop_id = p.shop_id AND p.report_date = %s
+            LEFT JOIN store_stats s ON sl.shop_id = s.store_id AND s.date = %s
+            ORDER BY sl.shop_id
+            """
+            params = union_params + [report_date, report_date, report_date]
+            cursor.execute(sql, params)
+            rows = list(cursor.fetchall())
+            for row in rows:
+                row['report_date'] = report_date
+        else:
+            # 未指定 accounts，查询该日期下所有门店数据（保持原有行为）
+            sql = """
+            SELECT
+                k.report_date, k.shop_id, k.shop_name,
+                k.exposure_users, k.visit_users, k.order_users,
+                k.verify_person_count AS verify_users,
+                k.order_coupon_count, k.verify_coupon_count,
+                k.promotion_cost, k.new_good_review_count, k.new_review_count,
+                k.new_collect_users, k.consult_users, k.intent_rate,
+                k.order_sale_amount, k.verify_sale_amount, k.verify_after_discount,
+                p.view_phone_count AS phone_clicks,
+                p.view_address_count AS address_clicks,
+                p.click_avg_price, p.order_count AS promotion_order_count,
+                s.order_user_rank, s.verify_amount_rank,
+                s.checkin_count, s.ad_balance, s.ad_order_count, s.is_force_offline
+            FROM kewen_daily_report k
+            LEFT JOIN promotion_daily_report p ON k.shop_id = p.shop_id AND k.report_date = p.report_date
+            LEFT JOIN store_stats s ON k.shop_id = s.store_id AND k.report_date = s.date
+            WHERE k.report_date = %s
+            ORDER BY k.shop_id
+            """
+            cursor.execute(sql, [report_date])
+            rows = list(cursor.fetchall())
 
         # 创建 Excel 工作簿
         wb = openpyxl.Workbook()
@@ -550,6 +561,127 @@ def generate_daily_report(report_date: str, accounts: Optional[List[str]] = None
         conn.close()
 
 
+# ==================== 辅助：按时间段查询三表数据并合并 ====================
+def _fetch_period_data(cursor, start_date, end_date, shop_ids_filter, shop_name_fallback):
+    """
+    分别查询 kewen_daily_report、promotion_daily_report、store_stats，
+    按店铺ID合并后返回。
+
+    当 shop_ids_filter 不为 None 时：以传入的店铺列表为准，
+    确保所有店铺都出现在结果中（某表无数据则对应字段为 None）。
+    当 shop_ids_filter 为 None 时：以 kewen_daily_report 的店铺为准（原有行为）。
+    """
+    if shop_ids_filter is not None and not shop_ids_filter:
+        return {}
+
+    def shop_clause(id_col, ids):
+        if not ids:
+            return "", []
+        ph = ','.join(['%s'] * len(ids))
+        return f" AND {id_col} IN ({ph})", list(ids)
+
+    k_clause, k_params = shop_clause('shop_id', shop_ids_filter)
+    p_clause, p_params = shop_clause('shop_id', shop_ids_filter)
+    s_clause, s_params = shop_clause('store_id', shop_ids_filter)
+
+    # kewen_daily_report
+    sql_k = f"""
+    SELECT shop_id, MAX(shop_name) AS shop_name,
+        SUM(verify_after_discount) AS verify_after_discount,
+        SUM(exposure_users) AS exposure_users,
+        SUM(visit_users) AS visit_users,
+        SUM(order_users) AS order_users,
+        SUM(order_coupon_count) AS order_coupon_count,
+        SUM(verify_person_count) AS verify_users,
+        SUM(verify_coupon_count) AS verify_coupon_count,
+        SUM(order_sale_amount) AS order_sale_amount,
+        SUM(verify_sale_amount) AS verify_sale_amount,
+        SUM(coupon_pay_order_count) AS coupon_orders,
+        SUM(promotion_cost) AS promotion_cost,
+        SUM(promotion_exposure_count) AS promotion_exposure,
+        SUM(promotion_click_count) AS promotion_clicks,
+        SUM(consult_users) AS consult_users,
+        SUM(new_collect_users) AS new_collect,
+        SUM(new_good_review_count) AS new_good_reviews,
+        SUM(new_review_count) AS new_reviews
+    FROM kewen_daily_report
+    WHERE report_date BETWEEN %s AND %s{k_clause}
+    GROUP BY shop_id
+    """
+    cursor.execute(sql_k, [start_date, end_date] + k_params)
+    kewen_data = {str(r['shop_id']): r for r in cursor.fetchall()}
+
+    # promotion_daily_report
+    sql_p = f"""
+    SELECT shop_id, MAX(shop_name) AS shop_name,
+        SUM(view_phone_count) AS phone_clicks,
+        SUM(order_count) AS promotion_orders,
+        SUM(view_groupbuy_count) AS view_groupbuy,
+        SUM(view_phone_count) AS view_phone,
+        SUM(view_address_count) AS address_clicks
+    FROM promotion_daily_report
+    WHERE report_date BETWEEN %s AND %s{p_clause}
+    GROUP BY shop_id
+    """
+    cursor.execute(sql_p, [start_date, end_date] + p_params)
+    promo_data = {str(r['shop_id']): r for r in cursor.fetchall()}
+
+    # store_stats
+    sql_s = f"""
+    SELECT store_id,
+        SUM(checkin_count) AS checkin_count
+    FROM store_stats
+    WHERE date BETWEEN %s AND %s{s_clause}
+    GROUP BY store_id
+    """
+    cursor.execute(sql_s, [start_date, end_date] + s_params)
+    stats_data = {str(r['store_id']): r for r in cursor.fetchall()}
+
+    # 确定需要输出的店铺集合
+    if shop_ids_filter is not None:
+        # 以传入列表为准，确保所有店铺都出现
+        all_sids = {str(s) for s in shop_ids_filter}
+    else:
+        # 未指定过滤条件，以 kewen 数据为准（保持原有行为）
+        all_sids = set(kewen_data.keys())
+
+    merged = {}
+    for sid in all_sids:
+        k = kewen_data.get(sid, {})
+        p = promo_data.get(sid, {})
+        s = stats_data.get(sid, {})
+        shop_name = k.get('shop_name') or p.get('shop_name') or shop_name_fallback.get(sid, f'门店{sid}')
+        merged[sid] = {
+            'shop_id': sid,
+            'shop_name': shop_name,
+            'verify_after_discount': k.get('verify_after_discount'),
+            'exposure_users': k.get('exposure_users'),
+            'visit_users': k.get('visit_users'),
+            'order_users': k.get('order_users'),
+            'order_coupon_count': k.get('order_coupon_count'),
+            'verify_users': k.get('verify_users'),
+            'verify_coupon_count': k.get('verify_coupon_count'),
+            'order_sale_amount': k.get('order_sale_amount'),
+            'verify_sale_amount': k.get('verify_sale_amount'),
+            'coupon_orders': k.get('coupon_orders'),
+            'promotion_cost': k.get('promotion_cost'),
+            'promotion_exposure': k.get('promotion_exposure'),
+            'promotion_clicks': k.get('promotion_clicks'),
+            'consult_users': k.get('consult_users'),
+            'new_collect': k.get('new_collect'),
+            'new_good_reviews': k.get('new_good_reviews'),
+            'new_reviews': k.get('new_reviews'),
+            'phone_clicks': p.get('phone_clicks'),
+            'promotion_orders': p.get('promotion_orders'),
+            'view_groupbuy': p.get('view_groupbuy'),
+            'view_phone': p.get('view_phone'),
+            'address_clicks': p.get('address_clicks'),
+            'checkin_count': s.get('checkin_count'),
+        }
+
+    return merged
+
+
 # ==================== 核心功能：生成周报 ====================
 def generate_weekly_report(
     week1_start: str,
@@ -613,72 +745,11 @@ def generate_weekly_report(
     cursor = conn.cursor(dictionary=True)
 
     try:
-        # 构建基础SQL
-        sql_week_base = """
-        SELECT
-            k.shop_id, k.shop_name,
-            SUM(k.verify_after_discount) as verify_after_discount,
-            SUM(k.exposure_users) as exposure_users,
-            SUM(k.visit_users) as visit_users,
-            SUM(k.order_users) as order_users,
-            SUM(k.order_coupon_count) as order_coupon_count,
-            SUM(k.verify_person_count) as verify_users,
-            SUM(k.verify_coupon_count) as verify_coupon_count,
-            SUM(k.order_sale_amount) as order_sale_amount,
-            SUM(k.verify_sale_amount) as verify_sale_amount,
-            SUM(k.coupon_pay_order_count) as coupon_orders,
-            SUM(p.view_phone_count) as phone_clicks,
-            SUM(k.promotion_cost) as promotion_cost,
-            SUM(k.promotion_exposure_count) as promotion_exposure,
-            SUM(k.promotion_click_count) as promotion_clicks,
-            SUM(p.order_count) as promotion_orders,
-            SUM(p.view_groupbuy_count) as view_groupbuy,
-            SUM(p.view_phone_count) as view_phone,
-            SUM(k.consult_users) as consult_users,
-            SUM(p.view_address_count) as address_clicks,
-            SUM(k.new_collect_users) as new_collect,
-            SUM(k.new_good_review_count) as new_good_reviews,
-            SUM(k.new_review_count) as new_reviews,
-            SUM(s.checkin_count) as checkin_count
-        FROM kewen_daily_report k
-        LEFT JOIN promotion_daily_report p ON k.shop_id = p.shop_id AND k.report_date = p.report_date
-        LEFT JOIN store_stats s ON k.shop_id = s.store_id AND k.report_date = s.date
-        WHERE k.report_date BETWEEN %s AND %s
-        """
-
-        # 添加shop_id过滤条件
-        if shop_ids_filter is not None:
-            if not shop_ids_filter:
-                sql_week = sql_week_base + " AND 1=0"  # 账号存在但无对应门店，返回 0 行
-            else:
-                shop_placeholders = ','.join(['%s'] * len(shop_ids_filter))
-                sql_week = sql_week_base + f" AND k.shop_id IN ({shop_placeholders})"
-        else:
-            sql_week = sql_week_base
-
-        sql_week += """
-        GROUP BY k.shop_id, k.shop_name
-        ORDER BY k.shop_id
-        """
-
-        # 构建参数
-        params_week1 = [week1_start, week1_end]
-        params_week2 = [week2_start, week2_end]
-        if shop_ids_filter:
-            params_week1.extend(shop_ids_filter)
-            params_week2.extend(shop_ids_filter)
-
-        cursor.execute(sql_week, params_week1)
-        week1_data = {row['shop_id']: row for row in cursor.fetchall()}
-
-        cursor.execute(sql_week, params_week2)
-        week2_data = {row['shop_id']: row for row in cursor.fetchall()}
+        # 分别查询三张表并合并，确保所有传入的店铺都出现在结果中
+        week1_data = _fetch_period_data(cursor, week1_start, week1_end, shop_ids_filter, shop_name_fallback)
+        week2_data = _fetch_period_data(cursor, week2_start, week2_end, shop_ids_filter, shop_name_fallback)
 
         all_shop_ids = set(week1_data.keys()) | set(week2_data.keys())
-
-        # 补全 accounts 中有但无任何数据的门店
-        if shop_ids_filter:
-            all_shop_ids |= set(shop_ids_filter)
 
         wb = openpyxl.Workbook()
         ws_summary = wb.active
