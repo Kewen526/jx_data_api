@@ -894,6 +894,181 @@ def generate_monthly_report(
     return generate_weekly_report(month1_start, month1_end, month2_start, month2_end, accounts)
 
 
+# ==================== 核心功能：生成评价报表 ====================
+def generate_review_report(
+    start_date: str,
+    end_date: str,
+    accounts: Optional[List[str]] = None,
+    shop_id: Optional[str] = None
+) -> str:
+    """
+    生成评价报表（美团+大众点评）
+    参数:
+        start_date: 开始日期，格式: 'YYYY-MM-DD'
+        end_date: 结束日期，格式: 'YYYY-MM-DD'
+        accounts: 门店账号列表
+        shop_id: 单个门店ID（美团shop_id）
+    返回:
+        生成的文件路径
+    """
+    db = get_db_pool()
+
+    shop_ids_filter = None
+    if shop_id:
+        shop_ids_filter = [shop_id]
+    elif accounts:
+        conn_temp = db.get_connection()
+        cursor_temp = conn_temp.cursor(dictionary=True)
+        try:
+            placeholders = ','.join(['%s'] * len(accounts))
+            cursor_temp.execute(
+                f"SELECT stores_json FROM platform_accounts WHERE account IN ({placeholders})",
+                accounts
+            )
+            account_data = cursor_temp.fetchall()
+            shop_ids_filter = []
+            for acc in account_data:
+                stores_json = acc.get('stores_json')
+                if stores_json:
+                    try:
+                        stores = json.loads(stores_json) if isinstance(stores_json, str) else stores_json
+                        if isinstance(stores, list):
+                            for store in stores:
+                                if isinstance(store, dict):
+                                    sid = str(store.get('shop_id', ''))
+                                    if sid:
+                                        shop_ids_filter.append(sid)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+        finally:
+            cursor_temp.close()
+            conn_temp.close()
+
+    conn = db.get_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        mt_params = [start_date, end_date]
+        sql_mt = """
+        SELECT
+            'meituan' AS platform,
+            review_time, city, shop_name,
+            meituan_shop_id AS shop_id,
+            user_nickname, star,
+            NULL AS score_detail,
+            content, content_length, pic_count, video_count,
+            is_replied, first_reply_time,
+            is_after_consume, consume_time
+        FROM review_summary_meituan
+        WHERE DATE(review_time) BETWEEN %s AND %s
+        """
+        if shop_ids_filter is not None:
+            if not shop_ids_filter:
+                sql_mt += " AND 1=0"
+            else:
+                ph = ','.join(['%s'] * len(shop_ids_filter))
+                sql_mt += f" AND meituan_shop_id IN ({ph})"
+                mt_params.extend(shop_ids_filter)
+
+        dp_params = [start_date, end_date]
+        sql_dp = """
+        SELECT
+            'dianping' AS platform,
+            review_time, city, shop_name,
+            meituan_shop_id AS shop_id,
+            user_nickname, star,
+            score_detail,
+            content, content_length, pic_count, video_count,
+            is_replied, first_reply_time,
+            is_after_consume, consume_time
+        FROM review_summary_dianping
+        WHERE DATE(review_time) BETWEEN %s AND %s
+        """
+        if shop_ids_filter is not None:
+            if not shop_ids_filter:
+                sql_dp += " AND 1=0"
+            else:
+                ph = ','.join(['%s'] * len(shop_ids_filter))
+                sql_dp += f" AND meituan_shop_id IN ({ph})"
+                dp_params.extend(shop_ids_filter)
+
+        cursor.execute(sql_mt, mt_params)
+        mt_rows = cursor.fetchall()
+
+        cursor.execute(sql_dp, dp_params)
+        dp_rows = cursor.fetchall()
+
+        all_rows = list(mt_rows) + list(dp_rows)
+        all_rows.sort(key=lambda x: (x['review_time'] or datetime.min), reverse=True)
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "评价汇总"
+
+        headers = [
+            '序号', '平台', '评价时间', '城市', '门店', '用户昵称',
+            '星级', '评分详情', '消费时间', '是否消费后评价',
+            '评价内容', '字数', '图片数', '视频数',
+            '是否已回复', '首次回复时间'
+        ]
+        ws.append(headers)
+
+        header_fill = PatternFill(start_color="D3D3D3", end_color="D3D3D3", fill_type="solid")
+        header_font = Font(bold=True, size=10)
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+
+        platform_names = {'meituan': '美团', 'dianping': '大众点评'}
+
+        for idx, row in enumerate(all_rows, start=1):
+            platform = platform_names.get(row.get('platform', ''), row.get('platform', ''))
+
+            review_time = row.get('review_time')
+            review_time_str = review_time.strftime('%Y-%m-%d %H:%M') if review_time else ''
+
+            consume_time = row.get('consume_time')
+            consume_time_str = consume_time.strftime('%Y-%m-%d') if consume_time else ''
+
+            first_reply_time = row.get('first_reply_time')
+            first_reply_str = first_reply_time.strftime('%Y-%m-%d %H:%M') if first_reply_time else ''
+
+            data_row = [
+                idx, platform, review_time_str,
+                row.get('city') or '', row.get('shop_name') or '',
+                row.get('user_nickname') or '',
+                row.get('star') or '', row.get('score_detail') or '',
+                consume_time_str, row.get('is_after_consume') or '',
+                row.get('content') or '',
+                row.get('content_length') or 0,
+                row.get('pic_count') or 0, row.get('video_count') or 0,
+                row.get('is_replied') or '', first_reply_str
+            ]
+            ws.append(data_row)
+
+        col_widths = [6, 10, 18, 8, 30, 15, 8, 20, 12, 12, 50, 6, 6, 6, 10, 18]
+        for col_idx, width in enumerate(col_widths, start=1):
+            ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+        for row in ws.iter_rows(min_row=2, max_row=len(all_rows) + 1, min_col=1, max_col=len(headers)):
+            for cell in row:
+                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            row[10].alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+
+        apply_border(ws, 1, len(all_rows) + 1, 1, len(headers))
+
+        output_filename = generate_temp_filename(
+            f"评价报表_{start_date.replace('-', '')}_{end_date.replace('-', '')}"
+        )
+        wb.save(output_filename)
+        return output_filename
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
 # ==================== 核心功能：生成自定义报表 ====================
 def generate_custom_report(
     period1_start: str,

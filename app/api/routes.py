@@ -16,7 +16,8 @@ from app.services.report import (
     generate_daily_report,
     generate_weekly_report,
     generate_monthly_report,
-    generate_custom_report
+    generate_custom_report,
+    generate_review_report
 )
 
 router = APIRouter(prefix="/api/report", tags=["报表生成"])
@@ -55,6 +56,14 @@ class CustomReportRequest(BaseModel):
     period2_end: str = Field(..., description="第二个时期结束日期", example="2025-12-14")
     accounts: Optional[List[str]] = Field(None, description="门店账号列表")
     shop_id: Optional[str] = Field(None, description="门店ID，用于筛选账号下的单个门店")
+
+
+class ReviewReportRequest(BaseModel):
+    """评价报表请求参数"""
+    start_date: str = Field(..., description="开始日期，格式: YYYY-MM-DD", example="2025-12-01")
+    end_date: str = Field(..., description="结束日期，格式: YYYY-MM-DD", example="2025-12-31")
+    accounts: Optional[List[str]] = Field(None, description="门店账号列表", example=["13718175572a"])
+    shop_id: Optional[str] = Field(None, description="门店ID（美团shop_id），用于筛选单个门店")
 
 
 # ==================== API 路由 ====================
@@ -170,6 +179,39 @@ async def create_custom_report(request: CustomReportRequest):
             request.period1_end,
             request.period2_start,
             request.period2_end,
+            request.accounts,
+            request.shop_id
+        )
+
+        if not file_path or not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="报表生成失败，未找到文件")
+
+        filename = os.path.basename(file_path)
+        return FileResponse(
+            path=file_path,
+            filename=filename,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"报表生成失败: {str(e)}")
+
+
+@router.post("/review", summary="生成评价报表", description="生成指定时间段的门店评价报表（美团+大众点评）")
+async def create_review_report(request: ReviewReportRequest):
+    """
+    生成评价报表
+    - 传入起止日期和可选的账号列表或门店ID
+    - 汇总美团和大众点评的用户评价数据
+    - 返回 Excel 文件下载
+    """
+    try:
+        queue = get_task_queue()
+        file_path = await queue.run_task(
+            generate_review_report,
+            request.start_date,
+            request.end_date,
             request.accounts,
             request.shop_id
         )
