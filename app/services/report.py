@@ -981,3 +981,97 @@ def generate_custom_report(
         shop_id: 单个门店ID，用于筛选账号下的特定门店
     """
     return generate_weekly_report(period1_start, period1_end, period2_start, period2_end, accounts, shop_id)
+
+
+# ==================== 核心功能：生成抖音商家日报 ====================
+def generate_merchant_daily_report(data_date: str) -> str:
+    """
+    生成抖音商家每日数据报表
+    参数:
+        data_date: 数据日期，格式: 'YYYY-MM-DD'
+    返回:
+        生成的文件路径
+    """
+    db = get_db_pool()
+    conn = db.get_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        sql = """
+        SELECT
+            merchant_name, merchant_id, industry, category,
+            cooperation_mode, follower_name,
+            pay_amount, confirm_amount, refund_amount,
+            item_pay_amount, room_pay_amount,
+            ledger_commission, ledger_smc_commission,
+            merchant_manage_score
+        FROM douyin_merchant_daily
+        WHERE data_date = %s
+        ORDER BY merchant_id
+        """
+        cursor.execute(sql, [data_date])
+        rows = cursor.fetchall()
+
+        # 创建 Excel 工作簿
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = f"商家数据_{data_date}"
+
+        # 表头
+        headers = [
+            '商家名称', '商家ID', '行业', '类目',
+            '合作模式', '跟进人',
+            '支付GMV', '核销GMV', '退款GMV',
+            '视频直接支付GMV', '直播支付GMV',
+            '总预估佣金', '服务商预估佣金',
+            '商家经营分'
+        ]
+        ws.append(headers)
+
+        # 表头样式
+        header_fill = PatternFill(start_color="D3D3D3", end_color="D3D3D3", fill_type="solid")
+        header_font = Font(bold=True, size=10)
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+
+        # 数据行
+        for row in rows:
+            ws.append([
+                row.get('merchant_name', ''),
+                row.get('merchant_id', ''),
+                row.get('industry', ''),
+                row.get('category', ''),
+                row.get('cooperation_mode', ''),
+                row.get('follower_name', ''),
+                round(float(row['pay_amount']), 2) if row.get('pay_amount') else 0,
+                round(float(row['confirm_amount']), 2) if row.get('confirm_amount') else 0,
+                round(float(row['refund_amount']), 2) if row.get('refund_amount') else 0,
+                round(float(row['item_pay_amount']), 2) if row.get('item_pay_amount') else 0,
+                round(float(row['room_pay_amount']), 2) if row.get('room_pay_amount') else 0,
+                round(float(row['ledger_commission']), 2) if row.get('ledger_commission') else 0,
+                round(float(row['ledger_smc_commission']), 2) if row.get('ledger_smc_commission') else 0,
+                row.get('merchant_manage_score', ''),
+            ])
+
+        # 列宽设置
+        col_widths = [20, 15, 12, 15, 12, 10, 14, 14, 14, 18, 16, 14, 16, 12]
+        for col_idx, width in enumerate(col_widths, start=1):
+            ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+        # 居中对齐 + 边框
+        for row in ws.iter_rows(min_row=1, max_row=len(rows) + 1, min_col=1, max_col=len(headers)):
+            for cell in row:
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+
+        apply_border(ws, 1, len(rows) + 1, 1, len(headers))
+
+        output_filename = generate_temp_filename(f"抖音商家日报_{data_date.replace('-', '')}")
+        wb.save(output_filename)
+
+        return output_filename
+
+    finally:
+        cursor.close()
+        conn.close()
