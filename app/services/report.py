@@ -325,21 +325,25 @@ def generate_daily_report(report_date: str, accounts: Optional[List[str]] = None
                 k.exposure_users, k.visit_users, k.order_users,
                 k.verify_person_count AS verify_users,
                 k.order_coupon_count, k.verify_coupon_count,
-                k.promotion_cost, k.new_good_review_count, k.new_review_count,
-                k.new_collect_users, k.consult_users, k.intent_rate,
+                k.promotion_cost, k.new_good_review_count,
+                sds.new_review AS new_review_count,
+                sds.new_favorite AS new_collect_users,
+                sds.online_consult AS consult_users,
+                k.intent_rate,
                 k.order_sale_amount, k.verify_sale_amount, k.verify_after_discount,
-                p.view_phone_count AS phone_clicks,
-                p.view_address_count AS address_clicks,
+                sds.phone AS phone_clicks,
+                sds.address AS address_clicks,
                 p.click_avg_price, p.order_count AS promotion_order_count,
                 s.order_user_rank, s.verify_amount_rank,
-                s.checkin_count, s.ad_balance, s.ad_order_count, s.is_force_offline
+                sds.new_checkin AS checkin_count, s.ad_balance, s.ad_order_count, s.is_force_offline
             FROM ({shop_subquery}) AS sl
             LEFT JOIN kewen_daily_report k ON sl.shop_id = k.shop_id AND k.report_date = %s
             LEFT JOIN promotion_daily_report p ON sl.shop_id = p.shop_id AND p.report_date = %s
             LEFT JOIN store_stats s ON sl.shop_id = s.store_id AND s.date = %s
+            LEFT JOIN store_daily_stats sds ON sl.shop_id = sds.store_id AND sds.data_date = %s
             ORDER BY sl.shop_id
             """
-            params = union_params + [report_date, report_date, report_date]
+            params = union_params + [report_date, report_date, report_date, report_date]
             cursor.execute(sql, params)
             rows = list(cursor.fetchall())
             for row in rows:
@@ -352,17 +356,21 @@ def generate_daily_report(report_date: str, accounts: Optional[List[str]] = None
                 k.exposure_users, k.visit_users, k.order_users,
                 k.verify_person_count AS verify_users,
                 k.order_coupon_count, k.verify_coupon_count,
-                k.promotion_cost, k.new_good_review_count, k.new_review_count,
-                k.new_collect_users, k.consult_users, k.intent_rate,
+                k.promotion_cost, k.new_good_review_count,
+                sds.new_review AS new_review_count,
+                sds.new_favorite AS new_collect_users,
+                sds.online_consult AS consult_users,
+                k.intent_rate,
                 k.order_sale_amount, k.verify_sale_amount, k.verify_after_discount,
-                p.view_phone_count AS phone_clicks,
-                p.view_address_count AS address_clicks,
+                sds.phone AS phone_clicks,
+                sds.address AS address_clicks,
                 p.click_avg_price, p.order_count AS promotion_order_count,
                 s.order_user_rank, s.verify_amount_rank,
-                s.checkin_count, s.ad_balance, s.ad_order_count, s.is_force_offline
+                sds.new_checkin AS checkin_count, s.ad_balance, s.ad_order_count, s.is_force_offline
             FROM kewen_daily_report k
             LEFT JOIN promotion_daily_report p ON k.shop_id = p.shop_id AND k.report_date = p.report_date
             LEFT JOIN store_stats s ON k.shop_id = s.store_id AND k.report_date = s.date
+            LEFT JOIN store_daily_stats sds ON k.shop_id = sds.store_id AND k.report_date = sds.data_date
             WHERE k.report_date = %s
             ORDER BY k.shop_id
             """
@@ -637,6 +645,23 @@ def _fetch_period_data(cursor, start_date, end_date, shop_ids_filter, shop_name_
     cursor.execute(sql_s, [start_date, end_date] + s_params)
     stats_data = {str(r['store_id']): r for r in cursor.fetchall()}
 
+    # store_daily_stats（电话点击、地址点击、在线咨询、新增收藏、新增打卡、新增评价）
+    sds_clause, sds_params = shop_clause('store_id', shop_ids_filter)
+    sql_sds = f"""
+    SELECT store_id,
+        SUM(phone) AS phone_clicks,
+        SUM(address) AS address_clicks,
+        SUM(online_consult) AS consult_users,
+        SUM(new_favorite) AS new_collect,
+        SUM(new_checkin) AS checkin_count,
+        SUM(new_review) AS new_reviews
+    FROM store_daily_stats
+    WHERE data_date BETWEEN %s AND %s{sds_clause}
+    GROUP BY store_id
+    """
+    cursor.execute(sql_sds, [start_date, end_date] + sds_params)
+    sds_data = {str(r['store_id']): r for r in cursor.fetchall()}
+
     # 确定需要输出的店铺集合
     if shop_ids_filter is not None:
         # 以传入列表为准，确保所有店铺都出现
@@ -650,6 +675,7 @@ def _fetch_period_data(cursor, start_date, end_date, shop_ids_filter, shop_name_
         k = kewen_data.get(sid, {})
         p = promo_data.get(sid, {})
         s = stats_data.get(sid, {})
+        sds = sds_data.get(sid, {})
         shop_name = k.get('shop_name') or p.get('shop_name') or shop_name_fallback.get(sid, f'门店{sid}')
         merged[sid] = {
             'shop_id': sid,
@@ -667,16 +693,16 @@ def _fetch_period_data(cursor, start_date, end_date, shop_ids_filter, shop_name_
             'promotion_cost': k.get('promotion_cost'),
             'promotion_exposure': k.get('promotion_exposure'),
             'promotion_clicks': k.get('promotion_clicks'),
-            'consult_users': k.get('consult_users'),
-            'new_collect': k.get('new_collect'),
+            'consult_users': sds.get('consult_users'),
+            'new_collect': sds.get('new_collect'),
             'new_good_reviews': k.get('new_good_reviews'),
-            'new_reviews': k.get('new_reviews'),
-            'phone_clicks': p.get('phone_clicks'),
+            'new_reviews': sds.get('new_reviews'),
+            'phone_clicks': sds.get('phone_clicks'),
             'promotion_orders': p.get('promotion_orders'),
             'view_groupbuy': p.get('view_groupbuy'),
             'view_phone': p.get('view_phone'),
-            'address_clicks': p.get('address_clicks'),
-            'checkin_count': s.get('checkin_count'),
+            'address_clicks': sds.get('address_clicks'),
+            'checkin_count': sds.get('checkin_count'),
         }
 
     return merged
