@@ -266,14 +266,23 @@ def generate_daily_report(report_date: str, accounts: Optional[List[str]] = None
         try:
             placeholders = ','.join(['%s'] * len(accounts))
             sql_accounts = f"""
-            SELECT stores_json FROM platform_accounts WHERE account IN ({placeholders})
+            SELECT stores_json, dele_id FROM platform_accounts WHERE account IN ({placeholders})
             """
             cursor_temp.execute(sql_accounts, accounts)
             account_data = cursor_temp.fetchall()
 
             shop_ids_filter = []
             shop_name_fallback = {}
+            dele_ids_set = set()
             for acc in account_data:
+                # 收集需要排除的门店ID
+                dele_id = acc.get('dele_id')
+                if dele_id and isinstance(dele_id, str):
+                    for did in dele_id.split(','):
+                        did = did.strip()
+                        if did:
+                            dele_ids_set.add(did)
+
                 stores_json = acc.get('stores_json')
                 if stores_json:
                     try:
@@ -293,6 +302,10 @@ def generate_daily_report(report_date: str, accounts: Optional[List[str]] = None
                                         )
                     except (json.JSONDecodeError, TypeError):
                         pass
+
+            # 排除dele_id中的门店
+            if dele_ids_set:
+                shop_ids_filter = [sid for sid in shop_ids_filter if sid not in dele_ids_set]
         finally:
             cursor_temp.close()
             conn_temp.close()
@@ -503,6 +516,7 @@ def generate_daily_report(report_date: str, accounts: Optional[List[str]] = None
                 ['', '', ''],
                 ['下单售价金额：', round(row['order_sale_amount'], 2) if row['order_sale_amount'] else 0, ''],
                 ['核销售价金额：', round(row['verify_sale_amount'], 2) if row['verify_sale_amount'] else 0, ''],
+                ['优惠后金额：', round(row['verify_after_discount'], 2) if row['verify_after_discount'] else 0, ''],
                 ['下单人数商圈排名：', order_rank_display, ''],
                 ['核销金额商圈排名：', verify_rank_display, ''],
                 ['', '', ''],
@@ -709,13 +723,22 @@ def generate_weekly_report(
         try:
             placeholders = ','.join(['%s'] * len(accounts))
             sql_accounts = f"""
-            SELECT stores_json FROM platform_accounts WHERE account IN ({placeholders})
+            SELECT stores_json, dele_id FROM platform_accounts WHERE account IN ({placeholders})
             """
             cursor_temp.execute(sql_accounts, accounts)
             account_data = cursor_temp.fetchall()
 
             shop_ids_filter = []
+            dele_ids_set = set()
             for acc in account_data:
+                # 收集需要排除的门店ID
+                dele_id = acc.get('dele_id')
+                if dele_id and isinstance(dele_id, str):
+                    for did in dele_id.split(','):
+                        did = did.strip()
+                        if did:
+                            dele_ids_set.add(did)
+
                 stores_json = acc.get('stores_json')
                 if stores_json:
                     try:
@@ -735,6 +758,10 @@ def generate_weekly_report(
                                         )
                     except (json.JSONDecodeError, TypeError):
                         pass
+
+            # 排除dele_id中的门店
+            if dele_ids_set:
+                shop_ids_filter = [sid for sid in shop_ids_filter if sid not in dele_ids_set]
         finally:
             cursor_temp.close()
             conn_temp.close()
