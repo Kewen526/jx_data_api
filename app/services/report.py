@@ -306,6 +306,8 @@ def generate_daily_report(report_date: str, accounts: Optional[List[str]] = None
             # 排除dele_id中的门店
             if dele_ids_set:
                 shop_ids_filter = [sid for sid in shop_ids_filter if sid not in dele_ids_set]
+            # 去重，防止多账号绑定同一门店导致重复行
+            shop_ids_filter = list(dict.fromkeys(shop_ids_filter))
         finally:
             cursor_temp.close()
             conn_temp.close()
