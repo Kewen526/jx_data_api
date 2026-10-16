@@ -11,6 +11,7 @@ import json
 import traceback
 import warnings
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import List, Optional
 
 import openpyxl
@@ -246,6 +247,29 @@ def get_ad_orders_today(shop_id, report_date):
         conn.close()
 
 
+def calculate_natural_traffic(visit_users, promotion_cost, click_avg_price):
+    """按日报口径估算自然流量；保留负值，缺失或异常输入明确标识。"""
+    if visit_users is None or promotion_cost is None:
+        return "数据缺失"
+    try:
+        visits = Decimal(str(visit_users))
+        cost = Decimal(str(promotion_cost))
+        if not visits.is_finite() or not cost.is_finite() or cost < 0:
+            return "数据异常"
+        if cost == 0:
+            natural_traffic = visits
+        else:
+            if click_avg_price is None:
+                return "数据异常"
+            price = Decimal(str(click_avg_price))
+            if not price.is_finite() or price <= 0:
+                return "数据异常"
+            natural_traffic = visits - cost / price
+        return float(natural_traffic.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    except (InvalidOperation, ValueError, TypeError):
+        return "数据异常"
+
+
 # ==================== 核心功能：生成日报 ====================
 def generate_daily_report(report_date: str, accounts: Optional[List[str]] = None) -> str:
     """
@@ -411,7 +435,7 @@ def generate_daily_report(report_date: str, accounts: Optional[List[str]] = None
             '星期', '日期', '序号', '运营', '城市', '销售', '门店',
             '曝光人数', '访问人数', '下单人数', '核销人数', '下单券数', '核销券数',
             '电话点击', '地址点击', '推广通消耗', '好评', '意向转化率',
-            '下单售价金额', '核销售价金额', '优惠后核销金额',
+            '下单售价金额', '核销售价金额', '优惠后核销金额', '自然流量',
             '下单人数商圈排名', '核销金额商圈排名'
         ]
         ws_summary.append(summary_headers)
@@ -445,6 +469,9 @@ def generate_daily_report(report_date: str, accounts: Optional[List[str]] = None
             order_rank_str = f"第{order_rank}名" if order_rank and order_rank < 100 else ("大于100名" if order_rank and order_rank >= 100 else "--")
             verify_rank_str = f"第{verify_rank}名" if verify_rank and verify_rank < 100 else ("大于100名" if verify_rank and verify_rank >= 100 else "--")
 
+            natural_traffic = calculate_natural_traffic(
+                row['visit_users'], row['promotion_cost'], row['click_avg_price']
+            )
             summary_row = [
                 weekday, date_str, idx, operator, city, sales, shop_name,
                 row['exposure_users'] or 0, row['visit_users'] or 0,
@@ -456,9 +483,11 @@ def generate_daily_report(report_date: str, accounts: Optional[List[str]] = None
                 round(row['order_sale_amount'], 2) if row['order_sale_amount'] else 0,
                 round(row['verify_sale_amount'], 2) if row['verify_sale_amount'] else 0,
                 round(row['verify_after_discount'], 2) if row['verify_after_discount'] else 0,
+                natural_traffic,
                 order_rank_str, verify_rank_str
             ]
             ws_summary.append(summary_row)
+            ws_summary.cell(row=idx + 1, column=22).number_format = '0.00'
 
             # 创建门店详细Sheet
             sheet_name = clean_sheet_name(shop_name)
@@ -532,6 +561,8 @@ def generate_daily_report(report_date: str, accounts: Optional[List[str]] = None
                 ['下单人数商圈排名：', order_rank_display, ''],
                 ['核销金额商圈排名：', verify_rank_display, ''],
                 ['', '', ''],
+                ['自然流量：', natural_traffic, ''],
+                ['', '', ''],
                 ['团单被强制下线数量：', is_force_offline, ''],
                 ['', '', ''],
                 ['运营：', operator, ''],
@@ -541,6 +572,7 @@ def generate_daily_report(report_date: str, accounts: Optional[List[str]] = None
 
             for row_data in detail_data:
                 ws_detail.append(row_data)
+            ws_detail['B36'].number_format = '0.00'
 
             ws_detail.column_dimensions['A'].width = 40
             ws_detail.column_dimensions['B'].width = 30
@@ -567,7 +599,7 @@ def generate_daily_report(report_date: str, accounts: Optional[List[str]] = None
 
             apply_border(ws_detail, 1, len(detail_data), 1, 3)
 
-        summary_widths = [6, 8, 5, 12, 8, 8, 46, 10, 10, 10, 10, 10, 10, 10, 10, 12, 8, 12, 12, 12, 12, 14, 14]
+        summary_widths = [6, 8, 5, 12, 8, 8, 46, 10, 10, 10, 10, 10, 10, 10, 10, 12, 8, 12, 12, 12, 12, 12, 14, 14]
         for col_idx, width in enumerate(summary_widths, start=1):
             ws_summary.column_dimensions[get_column_letter(col_idx)].width = width
 
